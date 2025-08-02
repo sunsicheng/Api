@@ -389,9 +389,93 @@ ISR（In-Sync Replicas）是与leader保持同步的副本集合：
 
 - **RoundRobinAssignor**：轮询分配
 
+   Kafka 中一种**高负载均衡性**的分区分配策略，适合多 topic 或不均匀分区场景，缺点是 **分配不稳定**(消费者上下线，这个分配会重新打乱)，不适合对分区稳定性要求高的生产场景。
+
+  ```
+  Kafka 有两个 Topic：
+  
+  topicA: 10 个分区（A0 ~ A9） ， topicB: 7 个分区（B0 ~ B6），
+   消费者数：3 个消费者，名字为c0，c1，c2
+   
+   分配过程：
+   1. 合并后的顺序列表（17 个分区）：
+      [A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, B0, B1, B2, B3, B4, B5, B6]
+   2. 依次轮询分配给三个消费者
+      c0	A0, A3, A6, A9, B2, B5		  6个
+      c1	A1, A4, A7, B0, B3, B6		  6个
+      c2	A2, A5, A8, B1, B4	  	      5个
+  ```
+
+  
+
 - **StickyAssignor**：尽量保持原有分配，减少rebalance影响
 
+  ```
+  假设：
+  
+  topicA 有 6 个分区：A0 ~ A5
+  group 有两个消费者：C1 和 C2
+  
+  初始分配如下：
+  C1: A0, A1, A2
+  C2: A3, A4, A5
+  
+  📌 某一时刻：C2 断开了，再重新加入
+  如果是 Range 或 RoundRobin：Kafka 会重新打乱分配 → 分区顺序可能完全变化
+  
+  如果是 StickyAssignor：
+  Kafka 会尽量让 A3~A5 继续由 C2 消费
+  只在必要时调整, 这样就减少了任务重新平衡带来的中断和数据重复处理
+  ```
+
+  缺点：
+
+  StickyAssignor 是**"暴力式 rebalance"**，每次 rebalance 时所有消费者都会暂停一次，然后分配分区；
+
+  ```
+  Kafka 使用 StickyAssignor（或其他 assignor）时，依赖于Group Coordinator进行分区分配（rebalance）： 如 C2 掉线（心跳失败或主动关闭）
+  
+  1. Kafka 发现消费者组成员发生变化 ，会触发一次 group rebalance
+  2. 所有消费者会进入 rebalance 状态（暂停消费）
+  3. C1 将会被重新分配分区，可能接手 C2 的分区
+  4. 重平衡完成后，C1 开始继续消费（包括原来 C2 的部分分区）
+  
+  ⚠️ 在这个 rebalance 完成之前，A3, A4, A5 是无人消费的状态。
+  ```
+
+  | 问题           | 描述                                                         |
+  | -------------- | ------------------------------------------------------------ |
+  | ❌ 消费中断     | 所有消费者都会暂停，等待重平衡完成                           |
+  | ❌ 无人接管滞后 | 原分区可能需要几十秒后才被其他消费者接手（依赖 session timeout） |
+  | ❌ 消费空窗期   | 有一段时间这些分区的数据积压                                 |
+
+
+
 - **CooperativeStickyAssignor**：增量rebalance，减少停顿时间
+
+- ```
+  假设：
+  topic 有 6 个分区：A0 ~ A5， 两个消费者 C1、C2
+  
+  初始分配：
+  C1: A0, A1, A2
+  C2: A3, A4, A5
+  
+  现在你部署新消费者 C3（扩容）：
+  
+  🔁 在旧策略中（如 StickyAssignor）：
+  所有消费者停止消费，rebalance → 重分配分区
+  
+  C3 加入后，C1、C2、C3 都重新开始消费
+  
+  ✅ 在 CooperativeStickyAssignor 中：
+  Kafka 检测到 C3 加入
+  
+  只将部分分区（比如 A2、A5）迁移到 C3
+  C1、C2 其余分区照常消费，不中断 ，整个过程几乎无缝、低延迟
+  ```
+
+  
 
 ### 4. Kafka消息积压处理
 
@@ -403,7 +487,9 @@ ISR（In-Sync Replicas）是与leader保持同步的副本集合：
 
 
 
+### 5.todo kafka遇到的问题
 
+### 6.kafka 优化
 
 # 6、StarRocks相关
 
