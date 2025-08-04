@@ -95,7 +95,49 @@ ORC和Parquet是目前最常用的，都支持列式存储和高效压缩。
 
 ### 4. Hive数据倾斜解决方案
 
-1. join 倾斜，2.group by 倾斜
+✅ 场景一：`JOIN` 倾斜（如一个大表 join 小表）
+
+**问题示例：**
+
+```
+SELECT a.*, b.info
+FROM big_table a
+JOIN dim_table b ON a.user_id = b.user_id;
+```
+
+🔧 解决方案
+
+| 方案                                                  | 说明                                                         |
+| ----------------------------------------------------- | ------------------------------------------------------------ |
+| **1. MapJoin（小表广播）**                            | Hive 会把小表加载到内存广播给每个 map。 加 hint：`/*+ MAPJOIN(b) */` |
+| **2. 使用 `hive.auto.convert.join=true`**（默认开启） | 自动将小表广播为 MapJoin。 配合参数 `hive.mapjoin.smalltable.filesize` 控制小表阈值 |
+| **3. 拆分大 key：加盐(salting)**                      | 如果某些 key（如 user_id='123'）数据量太大，可以人工给 key 加后缀 hash： `CONCAT(user_id, '_', floor(rand()*10))` |
+| **4. 改为 `LEFT SEMI JOIN`**                          | 如果只是做筛选，可以改写为 `LEFT SEMI JOIN` 减少数据传输     |
+
+
+
+------
+
+**✅ 场景二：`GROUP BY` 倾斜**
+
+**问题示例：**
+
+```
+SELECT user_id, COUNT(*)
+FROM logs
+GROUP BY user_id;
+```
+
+🔧 解决方案
+
+| 方案                                   | 说明                                                         |
+| -------------------------------------- | ------------------------------------------------------------ |
+| **1. 分两阶段聚合**                    | 第一次 group by + hash（将大 key 拆散），第二次再真正聚合。见下方示例 |
+| **2. 分桶表（bucketed table）**        | 如果 user_id 倾斜严重，建议建表时按 user_id 分桶             |
+| **3. 桶与 map 数一致**                 | 使用 `CLUSTERED BY user_id INTO N BUCKETS` 和 `set mapreduce.job.reduces=N;` 保证一致性 |
+| **4. 用 `distribute by` 手动分发 key** | 可以手动指定分区方式，缓解默认哈希造成的倾斜                 |
+
+
 
 - **参数调优**：
   
